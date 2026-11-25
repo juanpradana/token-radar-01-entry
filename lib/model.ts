@@ -12,7 +12,8 @@
 //   growth     = clamp(change_7d, -60, 120) per cent
 //   growthMult = 1 + (growth / 100) x GROWTH_WEIGHT
 //   maturity   = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age_days unknown: 365)
-//   implied    = max(1, round(base x growthMult x maturity))
+//   chainBoost = 1.0 + chain_bonus (per chain diversity & L2 preference)
+//   implied    = max(1, round(base x growthMult x maturity x chainBoost))
 //
 // The constants are the house model's, stated in the dashboard and changeable in the model sandbox. No
 // protocol name is ever special-cased: the same function scores every row.
@@ -50,6 +51,10 @@ export interface ModelConstants {
   maturity_range: number;
   maturity_days: number;
   unknown_age_days: number;
+  chain_boost_enabled: boolean;
+  chain_bonus_per_chain: number;
+  max_chain_bonus: number;
+  l2_bonus: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -61,10 +66,14 @@ export const MODEL: ModelConstants = {
   maturity_range: 0.4,
   maturity_days: 1095,
   unknown_age_days: 365,
+  chain_boost_enabled: true,
+  chain_bonus_per_chain: 0.02,
+  max_chain_bonus: 0.10,
+  l2_bonus: 0.03,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-1';
+export const MODEL_VERSION = 'radar-2';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
@@ -100,6 +109,7 @@ export interface BoardRow {
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
+    chain_boost: number;
     age_days: number | null;
   };
   farm_steps: string[];
@@ -120,6 +130,7 @@ export interface RadarRow {
   implied_value_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
+  chain_boost: number;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -158,6 +169,14 @@ export class SnapshotError extends Error {
 
 const DAY_MS = 86_400_000;
 
+/** Known L2 / scaling chains that get a small bonus. */
+const L2_CHAINS = new Set([
+  'Arbitrum', 'Optimism', 'Base', 'Polygon', 'Polygon zkEVM', 'zkSync Era', 'Linea',
+  'Scroll', 'Mantle', 'Blast', 'Mode', 'Metis', 'Boba', 'Canto', 'Kava', 'Moonbeam',
+  'Avalanche', 'Fantom', 'BSC', 'Gnosis', 'Celo', 'Harmony', 'Klaytn', 'Aurora',
+  'Starknet', 'zksync', 'zkSync', 'Linea', 'Manta Pacific', 'Merlin', 'X Layer',
+]);
+
 /** A finite number, else `fallback`. */
 function finite(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
@@ -172,17 +191,30 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
+/** Chain diversity boost: more chains = more distribution = slightly higher implied value. */
+function chainBoost(protocol: SnapshotProtocol, model: ModelConstants): number {
+  if (!model.chain_boost_enabled) return 1.0;
+  const uniqueChains = new Set(protocol.chains);
+  const chainCount = uniqueChains.size;
+  if (chainCount <= 1) return 1.0;
+  const chainBonus = Math.min(model.max_chain_bonus, chainCount * model.chain_bonus_per_chain);
+  const hasL2 = [...uniqueChains].some(c => L2_CHAINS.has(c));
+  const l2Bonus = hasL2 ? model.l2_bonus : 0;
+  return 1.0 + chainBonus + l2Bonus;
+}
+
 /** The three multipliers and the implied value one protocol gets under `model`. */
-export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
+export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; growthPct: number; growthMult: number; maturityMult: number; chainBoost: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+  const cBoost = chainBoost(protocol, model);
   const base = protocol.tvl_usd * model.base_multiple;
-  const implied = Math.max(1, Math.round(base * growthMult * maturityMult));
-  return { implied, growthPct, growthMult, maturityMult, age };
+  const implied = Math.max(1, Math.round(base * growthMult * maturityMult * cBoost));
+  return { implied, growthPct, growthMult, maturityMult, chainBoost: cBoost, age };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -230,8 +262,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   for (const p of early) chosen.set(p.slug, p);
 
   const scored = [...chosen.values()].map((p) => {
-    const { implied, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model);
-    return { p, implied, growthPct, growthMult, maturityMult, age };
+    const { implied, growthPct, growthMult, maturityMult, chainBoost, age } = impliedValue(p, snapshot.as_of, model);
+    return { p, implied, growthPct, growthMult, maturityMult, chainBoost, age };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -254,6 +286,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
+      chain_boost: round4(s.chainBoost),
       age_days: s.age,
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
@@ -384,6 +417,7 @@ export function radarRow(row: BoardRow): RadarRow {
     implied_value_usd: row.implied_value_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
+    chain_boost: row.model.chain_boost,
   };
 }
 
