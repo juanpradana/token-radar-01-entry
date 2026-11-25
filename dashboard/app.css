@@ -1,5 +1,4 @@
-/* Token Radar's plain theme. The five palette values, two radii and two families are the whole style;
-   everything else is spacing, a hairline and a type step. */
+/* Token Radar theme — minimal palette, two radii, two type families. */
 :root {
   --canvas: #f2f5f3;
   --surface: #ffffff;
@@ -38,6 +37,7 @@ p { margin: 0; }
 button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 a { color: var(--accent); }
+
 .skip {
   position: absolute; left: -9999px; top: 0; padding: var(--step-2) var(--step-4);
   background: var(--surface); border: 1px solid var(--border); z-index: 20;
@@ -55,6 +55,7 @@ a { color: var(--accent); }
 .brand-name { font-family: var(--font-num); font-size: 13px; letter-spacing: 0.02em; color: var(--muted); }
 .top-meta { display: flex; flex-wrap: wrap; gap: var(--step-3); justify-content: flex-end; color: var(--muted); font-size: 13px; }
 .top-meta span { white-space: nowrap; }
+
 .lede { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr); gap: var(--step-6); padding: var(--step-6) 0 var(--step-5); }
 .lede p { color: var(--muted); max-width: 62ch; margin-top: var(--step-2); }
 .facts { display: grid; gap: var(--step-2); align-content: start; border-left: 1px solid var(--border); padding-left: var(--step-5); }
